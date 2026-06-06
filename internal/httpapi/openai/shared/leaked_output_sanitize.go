@@ -51,6 +51,7 @@ func sanitizeLeakedOutput(text string) string {
 		return text
 	}
 	out := emptyJSONFencePattern.ReplaceAllString(text, "")
+	out = stripLeakedPromptPrelude(out)
 	out = leakedToolCallArrayPattern.ReplaceAllString(out, "")
 	out = leakedToolResultBlobPattern.ReplaceAllString(out, "")
 	out = stripDanglingThinkSuffix(out)
@@ -61,6 +62,26 @@ func sanitizeLeakedOutput(text string) string {
 	out = stripLeakedToolCallWrapperBlocks(out)
 	out = sanitizeLeakedAgentXMLBlocks(out)
 	return out
+}
+
+func stripLeakedPromptPrelude(text string) string {
+	if text == "" {
+		return text
+	}
+	cut := strings.LastIndex(text, "<|Assistant|>")
+	if cut < 0 {
+		cut = strings.LastIndex(text, "<| assistant |>")
+	}
+	if cut < 0 {
+		return text
+	}
+	prefix := text[:cut]
+	if !strings.Contains(prefix, "Output integrity guard:") &&
+		!strings.Contains(prefix, "<|System|>") &&
+		!strings.Contains(prefix, "<|User|>") {
+		return text
+	}
+	return strings.TrimLeft(text[cut+len("<|Assistant|>"):], "\r\n\t ")
 }
 
 func stripLeakedToolCallWrapperBlocks(text string) string {
