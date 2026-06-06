@@ -165,7 +165,7 @@ func TestExecuteNonStreamWithRetrySwitchesManagedAccountBeforeFinal429(t *testin
 	}
 }
 
-func TestExecuteNonStreamWithRetryReuploadsCurrentInputFileAfterAccountSwitch(t *testing.T) {
+func TestExecuteNonStreamWithRetryDoesNotReuploadGeneratedContextAfterAccountSwitch(t *testing.T) {
 	t.Setenv("DS2API_CONFIG_JSON", `{
 		"keys":["managed-key"],
 		"accounts":[
@@ -216,12 +216,12 @@ func TestExecuteNonStreamWithRetryReuploadsCurrentInputFileAfterAccountSwitch(t 
 	if result.Turn.Text != "ok from second account" {
 		t.Fatalf("text mismatch after switch retry: %q", result.Turn.Text)
 	}
-	if len(ds.uploads) != 2 {
-		t.Fatalf("expected current input file uploaded once per account, got %d", len(ds.uploads))
+	if len(ds.uploads) != 0 {
+		t.Fatalf("expected no generated context uploads, got %d", len(ds.uploads))
 	}
 	refIDs, _ := ds.payloads[2]["ref_file_ids"].([]any)
-	if len(refIDs) != 1 || refIDs[0] != "file-runtime-acc2@test.com" {
-		t.Fatalf("expected switched account ref_file_ids to use reuploaded file, got %#v", ds.payloads[2]["ref_file_ids"])
+	if len(refIDs) != 0 {
+		t.Fatalf("expected no generated ref_file_ids, got %#v", ds.payloads[2]["ref_file_ids"])
 	}
 }
 
@@ -278,7 +278,7 @@ func TestExecuteNonStreamWithRetryConvertsReferenceMarkers(t *testing.T) {
 	}
 }
 
-func TestStartCompletionAppliesCurrentInputFileGlobally(t *testing.T) {
+func TestStartCompletionLeavesCurrentInputInline(t *testing.T) {
 	ds := &fakeDeepSeekCaller{responses: []*http.Response{sseHTTPResponse(http.StatusOK, `data: {"p":"response/content","v":"ok"}`)}}
 	stdReq := promptcompat.StandardRequest{
 		Surface:         "test_adapter",
@@ -298,25 +298,22 @@ func TestStartCompletionAppliesCurrentInputFileGlobally(t *testing.T) {
 	if outErr != nil {
 		t.Fatalf("unexpected output error: %#v", outErr)
 	}
-	if len(ds.uploads) != 1 {
-		t.Fatalf("expected current input upload, got %d", len(ds.uploads))
-	}
-	if got := ds.uploads[0].Filename; got != "DS2API_HISTORY.txt" {
-		t.Fatalf("upload filename=%q want DS2API_HISTORY.txt", got)
+	if len(ds.uploads) != 0 {
+		t.Fatalf("expected no generated context uploads, got %d", len(ds.uploads))
 	}
 	if len(ds.payloads) != 1 {
 		t.Fatalf("expected one completion payload, got %d", len(ds.payloads))
 	}
 	refIDs, _ := ds.payloads[0]["ref_file_ids"].([]any)
-	if len(refIDs) != 1 || refIDs[0] != "file-runtime-1" {
-		t.Fatalf("expected uploaded file id in ref_file_ids, got %#v", ds.payloads[0]["ref_file_ids"])
+	if len(refIDs) != 0 {
+		t.Fatalf("expected no generated ref_file_ids, got %#v", ds.payloads[0]["ref_file_ids"])
 	}
 	prompt, _ := ds.payloads[0]["prompt"].(string)
-	if !strings.Contains(prompt, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
-		t.Fatalf("expected continuation prompt, got %q", prompt)
+	if prompt != "first user turn" {
+		t.Fatalf("expected original prompt, got %q", prompt)
 	}
-	if !start.Request.CurrentInputFileApplied || !strings.Contains(start.Request.PromptTokenText, "# DS2API_HISTORY.txt") {
-		t.Fatalf("expected prepared request to carry current input file state, got %#v", start.Request)
+	if start.Request.CurrentInputFileApplied || start.Request.HistoryText != "" {
+		t.Fatalf("expected no current input file state, got %#v", start.Request)
 	}
 }
 

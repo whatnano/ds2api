@@ -58,15 +58,15 @@ func TestGetSettingsIncludesCurrentInputFileDefaults(t *testing.T) {
 	var body map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	currentInputFile, _ := body["current_input_file"].(map[string]any)
-	if got := boolFrom(currentInputFile["enabled"]); !got {
-		t.Fatalf("expected current_input_file.enabled=true, body=%v", body)
+	if got := boolFrom(currentInputFile["enabled"]); got {
+		t.Fatalf("expected current_input_file.enabled=false, body=%v", body)
 	}
 	if got := intFrom(currentInputFile["min_chars"]); got != 0 {
 		t.Fatalf("expected current_input_file.min_chars=0, got %d body=%v", got, body)
 	}
 	thinkingInjection, _ := body["thinking_injection"].(map[string]any)
-	if got := boolFrom(thinkingInjection["enabled"]); !got {
-		t.Fatalf("expected thinking_injection.enabled=true, body=%v", body)
+	if got := boolFrom(thinkingInjection["enabled"]); got {
+		t.Fatalf("expected thinking_injection.enabled=false, body=%v", body)
 	}
 	if got, _ := thinkingInjection["prompt"].(string); got != "" {
 		t.Fatalf("expected empty custom thinking prompt, got %q body=%v", got, body)

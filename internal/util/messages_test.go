@@ -13,8 +13,11 @@ func TestMessagesPrepareBasic(t *testing.T) {
 	if got == "" {
 		t.Fatal("expected non-empty prompt")
 	}
-	if !strings.HasPrefix(got, "<|begin▁of▁sentence|><|System|>") {
-		t.Fatalf("expected output integrity guard at the start, got %q", got)
+	if strings.Contains(got, "Output integrity guard") {
+		t.Fatalf("expected no output integrity guard, got %q", got)
+	}
+	if !strings.HasPrefix(got, "<|begin▁of▁sentence|><|User|>") {
+		t.Fatalf("expected prompt to start with user message, got %q", got)
 	}
 	if !strings.Contains(got, "Hello") || !strings.HasSuffix(got, "<|Assistant|>") {
 		t.Fatalf("unexpected prompt: %q", got)
@@ -30,8 +33,8 @@ func TestMessagesPrepareRoles(t *testing.T) {
 		{"role": "user", "content": "How are you"},
 	}
 	got := MessagesPrepare(messages)
-	if !contains(got, "Output integrity guard") {
-		t.Fatalf("expected output integrity guard in %q", got)
+	if contains(got, "Output integrity guard") {
+		t.Fatalf("expected no output integrity guard in %q", got)
 	}
 	if !contains(got, "You are helper") || !contains(got, "<|User|>Hi") {
 		t.Fatalf("expected system/user content in %q", got)
@@ -87,8 +90,8 @@ func TestMessagesPrepareArrayTextVariants(t *testing.T) {
 	if !contains(got, "line1\nline2") {
 		t.Fatalf("unexpected content from text variants: %q", got)
 	}
-	if !strings.Contains(got, "Output integrity guard") {
-		t.Fatalf("expected output integrity guard in %q", got)
+	if strings.Contains(got, "Output integrity guard") {
+		t.Fatalf("expected no output integrity guard in %q", got)
 	}
 }
 

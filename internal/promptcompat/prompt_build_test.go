@@ -149,7 +149,7 @@ func TestBuildOpenAIToolsContextTranscriptContainsOnlyDescriptions(t *testing.T)
 	}
 }
 
-func TestBuildOpenAIFinalPromptPrependsOutputIntegrityGuard(t *testing.T) {
+func TestBuildOpenAIFinalPromptDoesNotPrependOutputIntegrityGuard(t *testing.T) {
 	messages := []any{
 		map[string]any{"role": "system", "content": "You are helpful"},
 		map[string]any{"role": "user", "content": "请调用工具"},
@@ -170,14 +170,11 @@ func TestBuildOpenAIFinalPromptPrependsOutputIntegrityGuard(t *testing.T) {
 	finalPrompt, _ := buildOpenAIFinalPrompt(messages, tools, "", false)
 	guardIdx := strings.Index(finalPrompt, "Output integrity guard")
 	toolIdx := strings.Index(finalPrompt, "TOOL CALL FORMAT")
-	if guardIdx < 0 {
-		t.Fatalf("expected output integrity guard in final prompt, got: %q", finalPrompt)
+	if guardIdx >= 0 {
+		t.Fatalf("expected no output integrity guard in final prompt, got: %q", finalPrompt)
 	}
 	if toolIdx < 0 {
 		t.Fatalf("expected tool instructions in final prompt, got: %q", finalPrompt)
-	}
-	if guardIdx > toolIdx {
-		t.Fatalf("expected output integrity guard to precede tool instructions, got: %q", finalPrompt)
 	}
 }
 

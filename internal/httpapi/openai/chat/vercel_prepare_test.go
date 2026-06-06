@@ -93,7 +93,7 @@ func TestStreamLeaseTTL(t *testing.T) {
 	}
 }
 
-func TestHandleVercelStreamPrepareAppliesCurrentInputFile(t *testing.T) {
+func TestHandleVercelStreamPrepareLeavesCurrentInputInline(t *testing.T) {
 	t.Setenv("VERCEL", "1")
 	t.Setenv("DS2API_VERCEL_INTERNAL_SECRET", "stream-secret")
 
@@ -122,8 +122,8 @@ func TestHandleVercelStreamPrepareAppliesCurrentInputFile(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(ds.uploadCalls) != 1 {
-		t.Fatalf("expected 1 current input upload, got %d", len(ds.uploadCalls))
+	if len(ds.uploadCalls) != 0 {
+		t.Fatalf("expected no generated context uploads, got %d", len(ds.uploadCalls))
 	}
 
 	var body map[string]any
@@ -135,15 +135,15 @@ func TestHandleVercelStreamPrepareAppliesCurrentInputFile(t *testing.T) {
 		t.Fatalf("expected payload object, got %#v", body["payload"])
 	}
 	promptText, _ := payload["prompt"].(string)
-	if !strings.Contains(promptText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
-		t.Fatalf("expected continuation prompt, got %s", promptText)
+	if strings.Contains(promptText, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") || strings.Contains(promptText, "DS2API_HISTORY.txt") {
+		t.Fatalf("expected no generated file continuation prompt, got %s", promptText)
 	}
-	if strings.Contains(promptText, "first user turn") || strings.Contains(promptText, "latest user turn") {
-		t.Fatalf("expected original turns hidden from prompt, got %s", promptText)
+	if !strings.Contains(promptText, "first user turn") || !strings.Contains(promptText, "latest user turn") {
+		t.Fatalf("expected original turns inline, got %s", promptText)
 	}
 	refIDs, _ := payload["ref_file_ids"].([]any)
-	if len(refIDs) == 0 || refIDs[0] != "file-inline-1" {
-		t.Fatalf("expected uploaded history file first in ref_file_ids, got %#v", payload["ref_file_ids"])
+	if len(refIDs) != 0 {
+		t.Fatalf("expected no generated ref_file_ids, got %#v", payload["ref_file_ids"])
 	}
 }
 
@@ -314,7 +314,7 @@ func TestHandleVercelStreamReleaseTriggersAutoDelete(t *testing.T) {
 	}
 }
 
-func TestHandleVercelStreamPrepareUploadsToolsSeparately(t *testing.T) {
+func TestHandleVercelStreamPrepareDoesNotUploadToolsContextFile(t *testing.T) {
 	t.Setenv("VERCEL", "1")
 	t.Setenv("DS2API_VERCEL_INTERNAL_SECRET", "stream-secret")
 
@@ -353,14 +353,8 @@ func TestHandleVercelStreamPrepareUploadsToolsSeparately(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(ds.uploadCalls) != 2 {
-		t.Fatalf("expected history and tools uploads, got %d", len(ds.uploadCalls))
-	}
-	if ds.uploadCalls[0].Filename != "DS2API_HISTORY.txt" || ds.uploadCalls[1].Filename != "DS2API_TOOLS.txt" {
-		t.Fatalf("unexpected upload filenames: %#v", ds.uploadCalls)
-	}
-	if strings.Contains(string(ds.uploadCalls[0].Data), "Description: search docs") {
-		t.Fatalf("history transcript should not embed tool descriptions, got %q", string(ds.uploadCalls[0].Data))
+	if len(ds.uploadCalls) != 0 {
+		t.Fatalf("expected no generated context uploads, got %d", len(ds.uploadCalls))
 	}
 
 	var body map[string]any
@@ -371,20 +365,20 @@ func TestHandleVercelStreamPrepareUploadsToolsSeparately(t *testing.T) {
 	payload, _ := body["payload"].(map[string]any)
 	payloadPrompt, _ := payload["prompt"].(string)
 	for label, promptText := range map[string]string{"final_prompt": finalPrompt, "payload.prompt": payloadPrompt} {
-		if !strings.Contains(promptText, "DS2API_TOOLS.txt") || !strings.Contains(promptText, "TOOL CALL FORMAT") {
-			t.Fatalf("expected %s to reference tools file and retain tool instructions, got %q", label, promptText)
+		if strings.Contains(promptText, "DS2API_TOOLS.txt") || !strings.Contains(promptText, "TOOL CALL FORMAT") {
+			t.Fatalf("expected %s to keep inline tool instructions without generated tools file, got %q", label, promptText)
 		}
-		if strings.Contains(promptText, "Description: search docs") {
-			t.Fatalf("expected %s not to inline tool descriptions, got %q", label, promptText)
+		if !strings.Contains(promptText, "Description: search docs") {
+			t.Fatalf("expected %s to inline tool descriptions, got %q", label, promptText)
 		}
 	}
 	refIDs, _ := payload["ref_file_ids"].([]any)
-	if len(refIDs) < 2 || refIDs[0] != "file-inline-1" || refIDs[1] != "file-inline-2" {
-		t.Fatalf("expected history and tools ref ids first, got %#v", payload["ref_file_ids"])
+	if len(refIDs) != 0 {
+		t.Fatalf("expected no generated ref ids, got %#v", payload["ref_file_ids"])
 	}
 }
 
-func TestHandleVercelStreamPrepareMapsCurrentInputFileManagedAuthFailureTo401(t *testing.T) {
+func TestHandleVercelStreamPrepareIgnoresGeneratedContextUploadFailure(t *testing.T) {
 	t.Setenv("VERCEL", "1")
 	t.Setenv("DS2API_VERCEL_INTERNAL_SECRET", "stream-secret")
 
@@ -412,11 +406,11 @@ func TestHandleVercelStreamPrepareMapsCurrentInputFileManagedAuthFailureTo401(t 
 
 	h.handleVercelStreamPrepare(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Please re-login the account in admin") {
-		t.Fatalf("expected managed auth error message, got %s", rec.Body.String())
+	if len(ds.uploadCalls) != 0 {
+		t.Fatalf("expected no generated context uploads, got %d", len(ds.uploadCalls))
 	}
 }
 

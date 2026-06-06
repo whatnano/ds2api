@@ -109,7 +109,7 @@ func (d *claudeCurrentInputDS) CallCompletion(_ context.Context, _ *auth.Request
 	}, nil
 }
 
-func TestClaudeDirectAppliesCurrentInputFile(t *testing.T) {
+func TestClaudeDirectLeavesCurrentInputInline(t *testing.T) {
 	ds := &claudeCurrentInputDS{}
 	historyStore := chathistory.New(filepath.Join(t.TempDir(), "history.json"))
 	h := &Handler{
@@ -128,19 +128,16 @@ func TestClaudeDirectAppliesCurrentInputFile(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(ds.uploads) != 1 {
-		t.Fatalf("expected one current input upload, got %d", len(ds.uploads))
-	}
-	if ds.uploads[0].Filename != "DS2API_HISTORY.txt" {
-		t.Fatalf("unexpected upload filename: %q", ds.uploads[0].Filename)
+	if len(ds.uploads) != 0 {
+		t.Fatalf("expected no generated context uploads, got %d", len(ds.uploads))
 	}
 	refIDs, _ := ds.payload["ref_file_ids"].([]any)
-	if len(refIDs) != 1 || refIDs[0] != "file-claude-history" {
-		t.Fatalf("expected uploaded history ref id, got %#v", ds.payload["ref_file_ids"])
+	if len(refIDs) != 0 {
+		t.Fatalf("expected no generated ref ids, got %#v", ds.payload["ref_file_ids"])
 	}
 	prompt, _ := ds.payload["prompt"].(string)
-	if !strings.Contains(prompt, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
-		t.Fatalf("expected continuation prompt, got %q", prompt)
+	if !strings.Contains(prompt, "hello from claude") || strings.Contains(prompt, "DS2API_HISTORY.txt") {
+		t.Fatalf("expected inline prompt without generated file reference, got %q", prompt)
 	}
 	snapshot, err := historyStore.Snapshot()
 	if err != nil {
@@ -153,15 +150,15 @@ func TestClaudeDirectAppliesCurrentInputFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get history item: %v", err)
 	}
-	if full.HistoryText != string(ds.uploads[0].Data) {
-		t.Fatalf("expected uploaded current input file to be persisted in history text")
+	if full.HistoryText != "" {
+		t.Fatalf("expected no generated history text, got %q", full.HistoryText)
 	}
-	if len(full.Messages) != 1 || !strings.Contains(full.Messages[0].Content, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
-		t.Fatalf("expected persisted message to match upstream continuation prompt, got %#v", full.Messages)
+	if len(full.Messages) != 1 || !strings.Contains(full.Messages[0].Content, "hello from claude") {
+		t.Fatalf("expected original message to be persisted, got %#v", full.Messages)
 	}
 }
 
-func TestClaudeCurrentInputFileUploadsToolsSeparately(t *testing.T) {
+func TestClaudeDoesNotUploadToolsContextFile(t *testing.T) {
 	ds := &claudeCurrentInputDS{}
 	h := &Handler{
 		Store: mockClaudeConfig{aliases: map[string]string{"claude-sonnet-4-6": "deepseek-v4-flash"}},
@@ -178,29 +175,15 @@ func TestClaudeCurrentInputFileUploadsToolsSeparately(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(ds.uploads) != 2 {
-		t.Fatalf("expected history and tools uploads, got %d", len(ds.uploads))
-	}
-	if ds.uploads[0].Filename != "DS2API_HISTORY.txt" || ds.uploads[1].Filename != "DS2API_TOOLS.txt" {
-		t.Fatalf("unexpected upload filenames: %#v", ds.uploads)
-	}
-	historyText := string(ds.uploads[0].Data)
-	if strings.Contains(historyText, "You have access to these tools") || strings.Contains(historyText, "Description: Search docs") {
-		t.Fatalf("history transcript should not embed tool descriptions, got %q", historyText)
-	}
-	toolsText := string(ds.uploads[1].Data)
-	if !strings.Contains(toolsText, "# DS2API_TOOLS.txt") || !strings.Contains(toolsText, "Tool: search") || !strings.Contains(toolsText, "Description: Search docs") {
-		t.Fatalf("expected tools transcript to include tool schema, got %q", toolsText)
+	if len(ds.uploads) != 0 {
+		t.Fatalf("expected no generated context uploads, got %d", len(ds.uploads))
 	}
 	refIDs, _ := ds.payload["ref_file_ids"].([]any)
-	if len(refIDs) < 2 || refIDs[0] != "file-claude-history" || refIDs[1] != "file-claude-tools" {
-		t.Fatalf("expected history and tools ref ids first, got %#v", ds.payload["ref_file_ids"])
+	if len(refIDs) != 0 {
+		t.Fatalf("expected no generated ref ids, got %#v", ds.payload["ref_file_ids"])
 	}
 	prompt, _ := ds.payload["prompt"].(string)
-	if !strings.Contains(prompt, "DS2API_TOOLS.txt") || !strings.Contains(prompt, "TOOL CALL FORMAT") {
-		t.Fatalf("expected live prompt to reference tools file and retain format instructions, got %q", prompt)
-	}
-	if strings.Contains(prompt, "Description: Search docs") {
-		t.Fatalf("live prompt should not inline tool descriptions, got %q", prompt)
+	if strings.Contains(prompt, "DS2API_TOOLS.txt") || !strings.Contains(prompt, "Description: Search docs") || !strings.Contains(prompt, "TOOL CALL FORMAT") {
+		t.Fatalf("expected inline tool prompt without generated tools file, got %q", prompt)
 	}
 }

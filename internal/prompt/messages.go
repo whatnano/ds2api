@@ -29,8 +29,6 @@ func MessagesPrepare(messages []map[string]any) string {
 }
 
 func MessagesPrepareWithThinking(messages []map[string]any, _ bool) string {
-	messages = prependOutputIntegrityGuard(messages)
-
 	type block struct {
 		Role string
 		Text string
@@ -81,33 +79,6 @@ func MessagesPrepareWithThinking(messages []map[string]any, _ bool) string {
 	}
 	out := strings.Join(parts, "")
 	return markdownImagePattern.ReplaceAllString(out, `[${1}](${2})`)
-}
-
-func prependOutputIntegrityGuard(messages []map[string]any) []map[string]any {
-	if len(messages) == 0 {
-		return messages
-	}
-	if hasOutputIntegrityGuard(messages[0]) {
-		return messages
-	}
-	out := make([]map[string]any, 0, len(messages)+1)
-	out = append(out, map[string]any{
-		"role":    "system",
-		"content": outputIntegrityGuardPrompt,
-	})
-	out = append(out, messages...)
-	return out
-}
-
-func hasOutputIntegrityGuard(msg map[string]any) bool {
-	if msg == nil {
-		return false
-	}
-	if strings.ToLower(strings.TrimSpace(asString(msg["role"]))) != "system" {
-		return false
-	}
-	content := strings.TrimSpace(NormalizeContent(msg["content"]))
-	return strings.Contains(content, outputIntegrityGuardMarker)
 }
 
 // formatRoleBlock produces a single concatenated block: marker + text + endMarker.
