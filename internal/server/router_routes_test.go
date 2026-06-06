@@ -3,6 +3,9 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -104,5 +107,34 @@ func TestAPIRoutesRemainRegistered(t *testing.T) {
 		if !got[want] {
 			t.Fatalf("expected route %s to be registered", want)
 		}
+	}
+}
+
+func TestAdminWebUIFallbackSurvivesAdminAPIRoute(t *testing.T) {
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<!doctype html><html>admin</html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	t.Setenv("DS2API_STATIC_ADMIN_DIR", staticDir)
+	t.Setenv("DS2API_CONFIG_JSON", `{"keys":["k1"],"accounts":[]}`)
+	t.Setenv("DS2API_ENV_WRITEBACK", "0")
+
+	app, err := NewApp()
+	if err != nil {
+		t.Fatalf("NewApp() error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	app.Router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/ status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+
+	apiRec := httptest.NewRecorder()
+	apiReq := httptest.NewRequest(http.MethodGet, "/admin/config", nil)
+	app.Router.ServeHTTP(apiRec, apiReq)
+	if apiRec.Code == http.StatusOK && apiRec.Header().Get("Content-Type") == "text/html; charset=utf-8" {
+		t.Fatal("GET /admin/config was served as WebUI instead of admin API")
 	}
 }

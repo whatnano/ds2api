@@ -118,6 +118,12 @@ func NewApp() (*App, error) {
 	ollama.RegisterRoutes(r, ollamaHandler)
 	r.Route("/admin", func(ar chi.Router) {
 		admin.RegisterRoutes(ar, adminHandler)
+		ar.NotFound(func(w http.ResponseWriter, req *http.Request) {
+			if strings.HasPrefix(req.URL.Path, "/admin/") && webuiHandler.HandleAdminFallback(w, req) {
+				return
+			}
+			http.NotFound(w, req)
+		})
 	})
 	webui.RegisterRoutes(r, webuiHandler)
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
