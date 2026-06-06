@@ -89,7 +89,7 @@ DS2API 当前的核心思路，不是把客户端传来的 `messages`、`tools`�
   "chat_session_id": "session-id",
   "model_type": "default",
   "parent_message_id": null,
-  "prompt": "<|begin▁of▁sentence|>...",
+  "prompt": "客户端传入的文本上下文",
   "ref_file_ids": [
     "file-history",
     "file-systemprompt",
@@ -123,14 +123,15 @@ OpenAI Chat / Responses 不再默认执行 `thinking_injection` 增强，也不�
 
 因此下游可见上下文中只包含客户端请求本身和协议兼容所需的结构化历史转换：
 
-- 普通请求会直接出现在最终 `prompt` 的最新 user block 末尾。
-- 如果触发 current input file，它会进入完整上下文文件中。
+- 单条普通 user 请求会直接成为最终 `prompt`，不额外包裹角色标记。
+- 多条历史消息会按标准化后的顺序把各条 `content` 纯文本用空行连接。
+- current input file 已停用，普通文本不会被拆到自动上下文文件中。
 
 另外，`MessagesPrepareWithThinking` 不再在最终 prompt 的最前面预置项目固定的 system 级“输出完整性约束（Output integrity guard）”。最终 prompt 的开头来自客户端显式传入的 system / developer / instructions 内容；如果客户端没有提供系统消息，兼容层不会为此额外生成一个前置 system 约束。
 
-### 5.1 角色标记
+### 5.1 纯文本 prompt
 
-最终 prompt 使用 DeepSeek 风格角色标记：
+最终 `MessagesPrepareWithThinking` 不再生成 DeepSeek chat-template / role token。也就是说，最终 prompt 不会包含这些标识符：
 
 - `<|begin▁of▁sentence|>`
 - `<|System|>`
@@ -144,14 +145,23 @@ OpenAI Chat / Responses 不再默认执行 `thinking_injection` 增强，也不�
 实现位置：
 [internal/prompt/messages.go](../internal/prompt/messages.go)
 
-### 5.2 相邻同角色消息会合并
+单条用户消息的最终 prompt 与用户原文完全一致。例如客户端发送：
 
-在最终 `MessagesPrepareWithThinking` 中，相邻同 role 的消息会被合并成一个块，中间插入空行。
+```json
+{"role":"user","content":"你好，请用一句话介绍你自己。"}
+```
 
-这意味着：
+下游网页版收到：
 
-- prompt 中看到的是“合并后的 role block”
-- 不是客户端传来的逐条 message 原样排列
+```text
+你好，请用一句话介绍你自己。
+```
+
+### 5.2 多条消息的拼接
+
+在最终 `MessagesPrepareWithThinking` 中，多条标准化消息会只取 `content` 文本，并按原顺序用一个空行连接。
+
+这意味着 prompt 中不再出现 role block 或 assistant 补全前缀；如果客户端没有显式传入某段文本，兼容层不会为它额外生成可见标记。
 
 ## 6. tools 为什么是“文本注入”，不是原生下发
 
@@ -234,7 +244,7 @@ assistant 历史 `tool_calls` 不会保留成 OpenAI 原生 JSON，而会转成 
 
 ### 7.3 tool result 保留方式
 
-tool / function role 的结果会作为 `<|Tool|>...<|end▁of▁toolresults|>` 进入 prompt。
+tool / function role 的结果会作为纯文本内容进入 prompt，不再包裹 `<|Tool|>` / `<|end▁of▁toolresults|>`。
 
 如果 tool content 为空，当前会补成字符串 `"null"`，避免整个 tool turn 丢失。
 
@@ -371,7 +381,7 @@ Parameters: ...
 
 ```json
 {
-  "prompt": "<|begin▁of▁sentence|><|System|>原 system / developer\n\nYou have access to these tools: ...\n\nTOOL CALL FORMAT — FOLLOW EXACTLY: ...<|end▁of▁instructions|><|User|>最新用户请求<|Assistant|>",
+  "prompt": "原 system / developer\n\nYou have access to these tools: ...\n\nTOOL CALL FORMAT — FOLLOW EXACTLY: ...\n\n最新用户请求",
   "ref_file_ids": [
     "file-systemprompt",
     "file-other-attachment"

@@ -16,10 +16,7 @@ func TestMessagesPrepareBasic(t *testing.T) {
 	if strings.Contains(got, "Output integrity guard") {
 		t.Fatalf("expected no output integrity guard, got %q", got)
 	}
-	if !strings.HasPrefix(got, "<|begin▁of▁sentence|><|User|>") {
-		t.Fatalf("expected prompt to start with user message, got %q", got)
-	}
-	if !strings.Contains(got, "Hello") || !strings.HasSuffix(got, "<|Assistant|>") {
+	if got != "Hello" {
 		t.Fatalf("unexpected prompt: %q", got)
 	}
 }
@@ -36,32 +33,16 @@ func TestMessagesPrepareRoles(t *testing.T) {
 	if contains(got, "Output integrity guard") {
 		t.Fatalf("expected no output integrity guard in %q", got)
 	}
-	if !contains(got, "You are helper") || !contains(got, "<|User|>Hi") {
+	if !contains(got, "You are helper") || !contains(got, "Hi") {
 		t.Fatalf("expected system/user content in %q", got)
 	}
-	if !contains(got, "<|begin▁of▁sentence|>") {
-		t.Fatalf("expected begin marker in %q", got)
+	if got != "You are helper\n\nHi\n\nHello\n\nSearch results\n\nHow are you" {
+		t.Fatalf("expected plain text transcript, got %q", got)
 	}
-	if !contains(got, "<|User|>Hi<|Assistant|>Hello<|end▁of▁sentence|>") {
-		t.Fatalf("expected user/assistant separation in %q", got)
-	}
-	if !contains(got, "<|Assistant|>Hello<|end▁of▁sentence|><|Tool|>Search results<|end▁of▁toolresults|>") {
-		t.Fatalf("expected assistant/tool separation in %q", got)
-	}
-	if !contains(got, "<|Tool|>Search results<|end▁of▁toolresults|><|User|>How are you") {
-		t.Fatalf("expected tool/user separation in %q", got)
-	}
-	if !contains(got, "<|Assistant|>") {
-		t.Fatalf("expected assistant marker in %q", got)
-	}
-	if !contains(got, "<|System|>") {
-		t.Fatalf("expected system marker in %q", got)
-	}
-	if !contains(got, "<|User|>") {
-		t.Fatalf("expected user marker in %q", got)
-	}
-	if !contains(got, "<|Tool|>") {
-		t.Fatalf("expected tool marker in %q", got)
+	for _, marker := range []string{"<|begin▁of▁sentence|>", "<|System|>", "<|User|>", "<|Assistant|>", "<|Tool|>"} {
+		if contains(got, marker) {
+			t.Fatalf("expected no marker %q in %q", marker, got)
+		}
 	}
 }
 

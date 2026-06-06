@@ -25,27 +25,29 @@ func TestMessagesPrepareNilContentNoNullLiteral(t *testing.T) {
 	}
 }
 
-func TestMessagesPrepareUsesTurnSuffixes(t *testing.T) {
+func TestMessagesPrepareUsesPlainTextOnly(t *testing.T) {
 	messages := []map[string]any{
 		{"role": "system", "content": "System rule"},
 		{"role": "user", "content": "Question"},
 		{"role": "assistant", "content": "Answer"},
 	}
 	got := MessagesPrepare(messages)
-	if !strings.HasPrefix(got, "<|begin▁of▁sentence|>") {
-		t.Fatalf("expected begin-of-sentence marker, got %q", got)
+	if got != "System rule\n\nQuestion\n\nAnswer" {
+		t.Fatalf("expected plain text transcript, got %q", got)
 	}
-	if !strings.Contains(got, "<|System|>") || !strings.Contains(got, "<|end▁of▁instructions|>") || !strings.Contains(got, "System rule") {
-		t.Fatalf("expected system instructions to remain present, got %q", got)
-	}
-	if !strings.Contains(got, "<|User|>Question") {
-		t.Fatalf("expected user question, got %q", got)
-	}
-	if !strings.Contains(got, "<|Assistant|>Answer<|end▁of▁sentence|>") {
-		t.Fatalf("expected assistant sentence suffix, got %q", got)
+	if containsChatTemplateMarker(got) {
+		t.Fatalf("expected no chat-template markers, got %q", got)
 	}
 	if strings.Contains(got, "<think>") || strings.Contains(got, "</think>") {
 		t.Fatalf("did not expect think tags in prompt, got %q", got)
+	}
+}
+
+func TestMessagesPrepareSingleUserMessageIsExactText(t *testing.T) {
+	const text = "你好，请用一句话介绍你自己。"
+	got := MessagesPrepare([]map[string]any{{"role": "user", "content": text}})
+	if got != text {
+		t.Fatalf("expected exact user text, got %q", got)
 	}
 }
 
@@ -58,11 +60,14 @@ func TestMessagesPrepareDoesNotPrependOutputIntegrityGuard(t *testing.T) {
 	if strings.Contains(got, outputIntegrityGuardPrompt) || strings.Contains(got, outputIntegrityGuardMarker) {
 		t.Fatalf("expected no output integrity guard, got %q", got)
 	}
-	if !strings.HasPrefix(got, beginSentenceMarker+systemMarker+"System rule") {
+	if !strings.HasPrefix(got, "System rule") {
 		t.Fatalf("expected prompt to start with caller system prompt, got %q", got)
 	}
-	if !strings.Contains(got, "<|User|>Question") {
+	if !strings.Contains(got, "Question") {
 		t.Fatalf("expected user question, got %q", got)
+	}
+	if containsChatTemplateMarker(got) {
+		t.Fatalf("expected no chat-template markers, got %q", got)
 	}
 }
 
@@ -82,7 +87,25 @@ func TestMessagesPrepareWithThinkingPreservesPromptShape(t *testing.T) {
 	if gotThinking != gotPlain {
 		t.Fatalf("expected thinking flag not to add extra continuity instructions, got thinking=%q plain=%q", gotThinking, gotPlain)
 	}
-	if !strings.HasSuffix(gotThinking, "<|Assistant|>") {
-		t.Fatalf("expected assistant suffix, got %q", gotThinking)
+	if containsChatTemplateMarker(gotThinking) {
+		t.Fatalf("expected no chat-template markers, got %q", gotThinking)
 	}
+}
+
+func containsChatTemplateMarker(s string) bool {
+	for _, marker := range []string{
+		"<|begin▁of▁sentence|>",
+		"<|System|>",
+		"<|User|>",
+		"<|Assistant|>",
+		"<|Tool|>",
+		"<|end▁of▁sentence|>",
+		"<|end▁of▁toolresults|>",
+		"<|end▁of▁instructions|>",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
