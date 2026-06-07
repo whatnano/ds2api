@@ -88,8 +88,9 @@ type geminiStreamRuntime struct {
 	history           *responsehistory.Session
 }
 
-func (h *Handler) handleStreamGenerateContentWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow string, stdReq promptcompat.StandardRequest, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, historySession *responsehistory.Session) {
+func (h *Handler) handleStreamGenerateContentWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow string, stdReq promptcompat.StandardRequest, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, historySession *responsehistory.Session, sessionLease *completionruntime.APISessionLease) {
 	if resp.StatusCode != http.StatusOK {
+		completionruntime.ReleaseSessionLease(sessionLease)
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
 		if historySession != nil {
@@ -116,6 +117,7 @@ func (h *Handler) handleStreamGenerateContentWithRetry(w http.ResponseWriter, r 
 		UsagePrompt:      finalPrompt,
 		Request:          stdReq,
 		CurrentInputFile: h.Store,
+		SessionLease:     sessionLease,
 	}, completionruntime.StreamRetryHooks{
 		ConsumeAttempt: func(currentResp *http.Response, allowDeferEmpty bool) (bool, bool) {
 			return h.consumeGeminiStreamAttempt(r.Context(), currentResp, runtime, thinkingEnabled, allowDeferEmpty)

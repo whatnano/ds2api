@@ -23,6 +23,7 @@ type StreamRetryOptions struct {
 	UsagePrompt      string
 	Request          promptcompat.StandardRequest
 	CurrentInputFile history.CurrentInputConfigReader
+	SessionLease     *APISessionLease
 }
 
 type StreamRetryHooks struct {
@@ -57,16 +58,25 @@ func ExecuteStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.Requ
 	accountSwitchAttempted := false
 	currentResp := initialResp
 	currentPayload := clonePayload(payload)
+	activeLease := opts.SessionLease
 	for {
 		allowAccountSwitch := opts.RetryEnabled && attempts >= retryMax && !accountSwitchAttempted && a != nil && a.UseConfigToken
 		terminalWritten, retryable := hooks.ConsumeAttempt(currentResp, opts.RetryEnabled && (attempts < retryMax || allowAccountSwitch))
 		if terminalWritten {
+			if activeLease != nil {
+				activeLease.complete(parentMessageIDFromHook(hooks))
+				activeLease = nil
+			}
 			if hooks.OnTerminal != nil {
 				hooks.OnTerminal(attempts)
 			}
 			return
 		}
 		if !retryable || !opts.RetryEnabled {
+			if activeLease != nil {
+				activeLease.release()
+				activeLease = nil
+			}
 			if hooks.Finalize != nil {
 				hooks.Finalize(attempts)
 			}
@@ -75,6 +85,10 @@ func ExecuteStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.Requ
 
 		if attempts >= retryMax {
 			if canRetryOnAlternateAccount(ctx, a, &assistantturn.OutputError{Status: http.StatusTooManyRequests}, opts.RetryEnabled, &accountSwitchAttempted) {
+				if activeLease != nil {
+					activeLease.invalidateAndRelease()
+					activeLease = nil
+				}
 				switched, switchErr := startPayloadCompletionOnAlternateAccount(ctx, ds, a, payload, opts, maxAttempts)
 				if switchErr != nil {
 					if hooks.OnRetryFailure != nil {
@@ -96,6 +110,10 @@ func ExecuteStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.Requ
 					continue
 				}
 			}
+			if activeLease != nil {
+				activeLease.release()
+				activeLease = nil
+			}
 			if hooks.Finalize != nil {
 				hooks.Finalize(attempts)
 			}
@@ -115,6 +133,10 @@ func ExecuteStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.Requ
 		}
 		nextResp, err := ds.CallCompletion(ctx, a, shared.ClonePayloadForEmptyOutputRetry(currentPayload, parentMessageID), retryPow, maxAttempts)
 		if err != nil {
+			if activeLease != nil {
+				activeLease.release()
+				activeLease = nil
+			}
 			if hooks.OnRetryFailure != nil {
 				hooks.OnRetryFailure(http.StatusInternalServerError, "Failed to get completion.", "error")
 			}
@@ -134,6 +156,10 @@ func ExecuteStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.Requ
 			if hooks.OnRetryFailure != nil {
 				hooks.OnRetryFailure(nextResp.StatusCode, msg, "error")
 			}
+			if activeLease != nil {
+				activeLease.release()
+				activeLease = nil
+			}
 			return
 		}
 		if hooks.OnRetry != nil {
@@ -144,6 +170,13 @@ func ExecuteStreamWithRetry(ctx context.Context, ds DeepSeekCaller, a *auth.Requ
 		}
 		currentResp = nextResp
 	}
+}
+
+func parentMessageIDFromHook(hooks StreamRetryHooks) int {
+	if hooks.ParentMessageID == nil {
+		return 0
+	}
+	return hooks.ParentMessageID()
 }
 
 func startPayloadCompletionOnAlternateAccount(ctx context.Context, ds DeepSeekCaller, a *auth.RequestAuth, payload map[string]any, opts StreamRetryOptions, maxAttempts int) (StartResult, *assistantturn.OutputError) {

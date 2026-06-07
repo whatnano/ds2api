@@ -61,8 +61,8 @@ func TestChatCompletionsAutoDeleteModes(t *testing.T) {
 		wantAll    int
 	}{
 		{name: "none", mode: "none"},
-		{name: "single", mode: "single", wantSingle: 1},
-		{name: "all", mode: "all", wantAll: 1},
+		{name: "single", mode: "single"},
+		{name: "all", mode: "all"},
 	}
 
 	for _, tc := range tests {
