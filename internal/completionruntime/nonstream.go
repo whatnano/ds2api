@@ -40,14 +40,20 @@ type NonStreamResult struct {
 }
 
 type StartResult struct {
-	SessionID string
-	Payload   map[string]any
-	Pow       string
-	Response  *http.Response
-	Request   promptcompat.StandardRequest
+	SessionID          string
+	Payload            map[string]any
+	Pow                string
+	Response           *http.Response
+	Request            promptcompat.StandardRequest
+	SessionLease       *APISessionLease
+	ContextFullRetried bool
 }
 
 func StartCompletion(ctx context.Context, ds DeepSeekCaller, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, opts Options) (StartResult, *assistantturn.OutputError) {
+	return startCompletion(ctx, ds, a, stdReq, opts, true)
+}
+
+func startCompletion(ctx context.Context, ds DeepSeekCaller, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, opts Options, allowContextFullRetry bool) (StartResult, *assistantturn.OutputError) {
 	maxAttempts := opts.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = 3
@@ -57,20 +63,47 @@ func StartCompletion(ctx context.Context, ds DeepSeekCaller, a *auth.RequestAuth
 	if prepErr != nil {
 		return StartResult{Request: stdReq}, prepErr
 	}
-	sessionID, err := ds.CreateSession(ctx, a, maxAttempts)
+	lease, sessionID, parentMessageID, prompt, err := acquireAPISessionLease(ctx, ds, a, stdReq, maxAttempts)
 	if err != nil {
 		return StartResult{Request: stdReq}, authOutputError(a)
 	}
 	pow, err := ds.GetPow(ctx, a, maxAttempts)
 	if err != nil {
+		if lease != nil {
+			lease.release()
+		}
 		return StartResult{SessionID: sessionID, Request: stdReq}, &assistantturn.OutputError{Status: http.StatusUnauthorized, Message: "Failed to get PoW (invalid token or unknown error).", Code: "error"}
 	}
-	payload := stdReq.CompletionPayload(sessionID)
+	payload := stdReq.CompletionPayloadWithOptions(promptcompat.CompletionPayloadOptions{
+		SessionID:       sessionID,
+		ParentMessageID: parentMessageID,
+		Prompt:          prompt,
+	})
 	resp, err := ds.CallCompletion(ctx, a, payload, pow, maxAttempts)
 	if err != nil {
+		if lease != nil {
+			lease.release()
+		}
 		return StartResult{SessionID: sessionID, Payload: payload, Pow: pow, Request: stdReq}, &assistantturn.OutputError{Status: http.StatusInternalServerError, Message: "Failed to get completion.", Code: "error"}
 	}
-	return StartResult{SessionID: sessionID, Payload: payload, Pow: pow, Response: resp, Request: stdReq}, nil
+	if allowContextFullRetry && resp.StatusCode != http.StatusOK && lease != nil {
+		body, _ := io.ReadAll(resp.Body)
+		if err := resp.Body.Close(); err != nil {
+			config.Logger.Warn("[completion_runtime] context-full probe body close failed", "surface", stdReq.Surface, "error", err)
+		}
+		message := strings.TrimSpace(string(body))
+		if message == "" {
+			message = http.StatusText(resp.StatusCode)
+		}
+		if isContextFullError(resp.StatusCode, message) {
+			lease.invalidateAndRelease()
+			restarted, restartErr := startCompletion(ctx, ds, a, stdReq, opts, false)
+			restarted.ContextFullRetried = true
+			return restarted, restartErr
+		}
+		resp.Body = io.NopCloser(strings.NewReader(string(body)))
+	}
+	return StartResult{SessionID: sessionID, Payload: payload, Pow: pow, Response: resp, Request: stdReq, SessionLease: lease}, nil
 }
 
 func prepareCurrentInputFile(ctx context.Context, ds DeepSeekCaller, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, opts Options) (promptcompat.StandardRequest, *assistantturn.OutputError) {
@@ -106,6 +139,7 @@ func ExecuteNonStreamStartedWithRetry(ctx context.Context, ds DeepSeekCaller, a 
 	attempts := 0
 	accountSwitchAttempted := false
 	currentResp := start.Response
+	contextFullRetryAttempted := start.ContextFullRetried
 	usagePrompt := stdReq.PromptTokenText
 	accumulatedThinking := ""
 	accumulatedRawThinking := ""
@@ -113,7 +147,29 @@ func ExecuteNonStreamStartedWithRetry(ctx context.Context, ds DeepSeekCaller, a 
 	for {
 		turn, outErr := collectAttempt(currentResp, stdReq, usagePrompt, opts)
 		if outErr != nil {
+			if isContextFullError(outErr.Status, outErr.Message) && !contextFullRetryAttempted && start.SessionLease != nil {
+				contextFullRetryAttempted = true
+				start.SessionLease.invalidateAndRelease()
+				restarted, restartErr := StartCompletion(ctx, ds, a, stdReq, opts)
+				if restartErr != nil {
+					return NonStreamResult{SessionID: sessionID, Payload: payload, Attempts: attempts}, restartErr
+				}
+				start = restarted
+				sessionID = restarted.SessionID
+				payload = restarted.Payload
+				pow = restarted.Pow
+				currentResp = restarted.Response
+				usagePrompt = stdReq.PromptTokenText
+				accumulatedThinking = ""
+				accumulatedRawThinking = ""
+				accumulatedToolDetectionThinking = ""
+				continue
+			}
 			if canRetryOnAlternateAccount(ctx, a, outErr, opts.RetryEnabled, &accountSwitchAttempted) {
+				if start.SessionLease != nil {
+					start.SessionLease.invalidateAndRelease()
+					start.SessionLease = nil
+				}
 				switched, switchErr := startStandardCompletionOnAlternateAccount(ctx, ds, a, stdReq, opts, maxAttempts)
 				if switchErr != nil {
 					return NonStreamResult{SessionID: sessionID, Payload: payload, Attempts: attempts}, switchErr
@@ -130,6 +186,9 @@ func ExecuteNonStreamStartedWithRetry(ctx context.Context, ds DeepSeekCaller, a 
 					accumulatedToolDetectionThinking = ""
 					continue
 				}
+			}
+			if start.SessionLease != nil {
+				start.SessionLease.release()
 			}
 			return NonStreamResult{SessionID: sessionID, Payload: payload, Attempts: attempts}, outErr
 		}
@@ -154,6 +213,10 @@ func ExecuteNonStreamStartedWithRetry(ctx context.Context, ds DeepSeekCaller, a 
 		}
 		if !opts.RetryEnabled || !assistantturn.ShouldRetryEmptyOutput(turn, attempts, retryMax) {
 			if canRetryOnAlternateAccount(ctx, a, turn.Error, opts.RetryEnabled, &accountSwitchAttempted) {
+				if start.SessionLease != nil {
+					start.SessionLease.invalidateAndRelease()
+					start.SessionLease = nil
+				}
 				switched, switchErr := startStandardCompletionOnAlternateAccount(ctx, ds, a, stdReq, opts, maxAttempts)
 				if switchErr != nil {
 					return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, switchErr
@@ -171,6 +234,13 @@ func ExecuteNonStreamStartedWithRetry(ctx context.Context, ds DeepSeekCaller, a 
 					continue
 				}
 			}
+			if start.SessionLease != nil {
+				if turn.Error == nil {
+					start.SessionLease.complete(turn.ResponseMessageID)
+				} else {
+					start.SessionLease.release()
+				}
+			}
 			return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, turn.Error
 		}
 
@@ -184,6 +254,9 @@ func ExecuteNonStreamStartedWithRetry(ctx context.Context, ds DeepSeekCaller, a 
 		retryPayload := shared.ClonePayloadForEmptyOutputRetry(payload, turn.ResponseMessageID)
 		nextResp, err := ds.CallCompletion(ctx, a, retryPayload, retryPow, maxAttempts)
 		if err != nil {
+			if start.SessionLease != nil {
+				start.SessionLease.release()
+			}
 			return NonStreamResult{SessionID: sessionID, Payload: payload, Turn: turn, Attempts: attempts}, &assistantturn.OutputError{Status: http.StatusInternalServerError, Message: "Failed to get completion.", Code: "error"}
 		}
 		usagePrompt = shared.UsagePromptWithEmptyOutputRetry(usagePrompt, attempts)

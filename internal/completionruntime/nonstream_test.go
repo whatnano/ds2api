@@ -5,9 +5,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"ds2api/internal/account"
+	"ds2api/internal/assistantturn"
 	"ds2api/internal/auth"
 	"ds2api/internal/config"
 	dsclient "ds2api/internal/deepseek/client"
@@ -19,6 +22,7 @@ type fakeDeepSeekCaller struct {
 	payloads           []map[string]any
 	uploads            []dsclient.UploadFileRequest
 	completionAccounts []string
+	createdSessions    []string
 	sessionByAccount   bool
 }
 
@@ -29,9 +33,16 @@ func (currentInputRuntimeConfig) CurrentInputFileMinChars() int { return 0 }
 
 func (f *fakeDeepSeekCaller) CreateSession(_ context.Context, a *auth.RequestAuth, _ int) (string, error) {
 	if f.sessionByAccount && a != nil && a.AccountID != "" {
-		return "session-" + a.AccountID, nil
+		sessionID := "session-" + a.AccountID
+		f.createdSessions = append(f.createdSessions, sessionID)
+		return sessionID, nil
 	}
-	return "session-1", nil
+	sessionID := "session-1"
+	if len(f.createdSessions) > 0 {
+		sessionID = "session-" + string(rune('1'+len(f.createdSessions)))
+	}
+	f.createdSessions = append(f.createdSessions, sessionID)
+	return sessionID, nil
 }
 
 func (f *fakeDeepSeekCaller) GetPow(context.Context, *auth.RequestAuth, int) (string, error) {
@@ -57,6 +68,52 @@ func (f *fakeDeepSeekCaller) CallCompletion(_ context.Context, a *auth.RequestAu
 	resp := f.responses[0]
 	f.responses = f.responses[1:]
 	return resp, nil
+}
+
+type concurrentSessionCaller struct {
+	mu              sync.Mutex
+	payloads        []map[string]any
+	createdSessions int
+	firstStarted    chan struct{}
+	secondStarted   chan struct{}
+	releaseFirst    chan struct{}
+}
+
+func newConcurrentSessionCaller() *concurrentSessionCaller {
+	return &concurrentSessionCaller{
+		firstStarted:  make(chan struct{}),
+		secondStarted: make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+	}
+}
+
+func (c *concurrentSessionCaller) CreateSession(context.Context, *auth.RequestAuth, int) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.createdSessions++
+	return "session-1", nil
+}
+
+func (c *concurrentSessionCaller) GetPow(context.Context, *auth.RequestAuth, int) (string, error) {
+	return "pow", nil
+}
+
+func (c *concurrentSessionCaller) UploadFile(context.Context, *auth.RequestAuth, dsclient.UploadFileRequest, int) (*dsclient.UploadFileResult, error) {
+	return &dsclient.UploadFileResult{ID: "file-id"}, nil
+}
+
+func (c *concurrentSessionCaller) CallCompletion(_ context.Context, _ *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
+	c.mu.Lock()
+	c.payloads = append(c.payloads, payload)
+	callIndex := len(c.payloads)
+	c.mu.Unlock()
+	if callIndex == 1 {
+		close(c.firstStarted)
+		<-c.releaseFirst
+		return sseHTTPResponse(http.StatusOK, `data: {"response_message_id":701,"p":"response/content","v":"first"}`), nil
+	}
+	close(c.secondStarted)
+	return sseHTTPResponse(http.StatusOK, `data: {"response_message_id":702,"p":"response/content","v":"second"}`), nil
 }
 
 func TestExecuteNonStreamWithRetryBuildsCanonicalTurn(t *testing.T) {
@@ -252,6 +309,182 @@ func TestExecuteNonStreamWithRetryUsesParentMessageForEmptyRetry(t *testing.T) {
 	}
 	if result.Turn.Text != "ok" {
 		t.Fatalf("retry text mismatch: %q", result.Turn.Text)
+	}
+}
+
+func TestExecuteNonStreamReusesSessionByCallerID(t *testing.T) {
+	apiSessions = newAPISessionManager()
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":101,"p":"response/content","v":"first"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":102,"p":"response/content","v":"second"}`),
+	}}
+	a := &auth.RequestAuth{CallerID: "caller:a", DeepSeekToken: "token-a"}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     strings.Repeat("system prelude ", 8) + "first question",
+	}
+
+	if _, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{}); outErr != nil {
+		t.Fatalf("first request failed: %#v", outErr)
+	}
+	stdReq.FinalPrompt = strings.Repeat("system prelude ", 8) + "second question"
+	if _, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{}); outErr != nil {
+		t.Fatalf("second request failed: %#v", outErr)
+	}
+	if len(ds.createdSessions) != 1 {
+		t.Fatalf("expected one session, got %v", ds.createdSessions)
+	}
+	if got := ds.payloads[1]["chat_session_id"]; got != ds.payloads[0]["chat_session_id"] {
+		t.Fatalf("expected reused session, got first=%#v second=%#v", ds.payloads[0]["chat_session_id"], got)
+	}
+	if got := ds.payloads[1]["parent_message_id"]; got != 101 {
+		t.Fatalf("expected parent id 101, got %#v", got)
+	}
+	if prompt, _ := ds.payloads[1]["prompt"].(string); strings.Contains(prompt, "system prelude") || prompt != "second question" {
+		t.Fatalf("expected deduped prompt, got %q", prompt)
+	}
+}
+
+func TestExecuteNonStreamSeparatesSessionsByCallerID(t *testing.T) {
+	apiSessions = newAPISessionManager()
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":201,"p":"response/content","v":"a"}`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":301,"p":"response/content","v":"b"}`),
+	}}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     "hello",
+	}
+
+	if _, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, &auth.RequestAuth{CallerID: "caller:a", DeepSeekToken: "token-a"}, stdReq, Options{}); outErr != nil {
+		t.Fatalf("caller a failed: %#v", outErr)
+	}
+	if _, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, &auth.RequestAuth{CallerID: "caller:b", DeepSeekToken: "token-a"}, stdReq, Options{}); outErr != nil {
+		t.Fatalf("caller b failed: %#v", outErr)
+	}
+	if len(ds.createdSessions) != 2 {
+		t.Fatalf("expected two independent sessions, got %v", ds.createdSessions)
+	}
+	if ds.payloads[0]["chat_session_id"] == ds.payloads[1]["chat_session_id"] {
+		t.Fatalf("expected distinct sessions, got %#v", ds.payloads)
+	}
+}
+
+func TestExecuteNonStreamCreatesNewSessionAfterContextFull(t *testing.T) {
+	apiSessions = newAPISessionManager()
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":401,"p":"response/content","v":"first"}`),
+		sseHTTPResponse(http.StatusBadRequest, `context length exceeded`),
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":501,"p":"response/content","v":"after reset"}`),
+	}}
+	a := &auth.RequestAuth{CallerID: "caller:a", DeepSeekToken: "token-a"}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     strings.Repeat("system prelude ", 8) + "first question",
+	}
+	if _, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{}); outErr != nil {
+		t.Fatalf("first request failed: %#v", outErr)
+	}
+	stdReq.FinalPrompt = strings.Repeat("system prelude ", 8) + "second question"
+	result, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{})
+	if outErr != nil {
+		t.Fatalf("context-full retry failed: %#v", outErr)
+	}
+	if result.Turn.Text != "after reset" {
+		t.Fatalf("unexpected retry text: %q", result.Turn.Text)
+	}
+	if len(ds.createdSessions) != 2 {
+		t.Fatalf("expected new session after context full, got %v", ds.createdSessions)
+	}
+	if got := ds.payloads[2]["parent_message_id"]; got != nil {
+		t.Fatalf("expected reset request without parent, got %#v", got)
+	}
+	if prompt, _ := ds.payloads[2]["prompt"].(string); prompt != stdReq.FinalPrompt {
+		t.Fatalf("expected full prompt after reset, got %q", prompt)
+	}
+}
+
+func TestExecuteNonStreamContextFullRetryOnlyOnce(t *testing.T) {
+	apiSessions = newAPISessionManager()
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{
+		sseHTTPResponse(http.StatusOK, `data: {"response_message_id":601,"p":"response/content","v":"first"}`),
+		sseHTTPResponse(http.StatusBadRequest, `context window is full`),
+		sseHTTPResponse(http.StatusBadRequest, `context window is full`),
+	}}
+	a := &auth.RequestAuth{CallerID: "caller:a", DeepSeekToken: "token-a"}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     "hello",
+	}
+	if _, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{}); outErr != nil {
+		t.Fatalf("first request failed: %#v", outErr)
+	}
+	_, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{})
+	if outErr == nil {
+		t.Fatal("expected context-full retry failure")
+	}
+	if len(ds.createdSessions) != 2 {
+		t.Fatalf("expected exactly one recreated session, got %v", ds.createdSessions)
+	}
+	if len(ds.payloads) != 3 {
+		t.Fatalf("expected three completion attempts, got %d", len(ds.payloads))
+	}
+}
+
+func TestExecuteNonStreamSerializesConcurrentRequestsForCallerID(t *testing.T) {
+	apiSessions = newAPISessionManager()
+	ds := newConcurrentSessionCaller()
+	a := &auth.RequestAuth{CallerID: "caller:a", DeepSeekToken: "token-a"}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash",
+		PromptTokenText: "prompt",
+		FinalPrompt:     strings.Repeat("system prelude ", 8) + "question",
+	}
+
+	errCh := make(chan *assistantturn.OutputError, 2)
+	go func() {
+		_, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, stdReq, Options{})
+		errCh <- outErr
+	}()
+	<-ds.firstStarted
+
+	go func() {
+		nextReq := stdReq
+		nextReq.FinalPrompt = strings.Repeat("system prelude ", 8) + "next question"
+		_, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, a, nextReq, Options{})
+		errCh <- outErr
+	}()
+
+	select {
+	case <-ds.secondStarted:
+		t.Fatal("second request reached DeepSeek before first response completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(ds.releaseFirst)
+	for i := 0; i < 2; i++ {
+		if outErr := <-errCh; outErr != nil {
+			t.Fatalf("request %d failed: %#v", i, outErr)
+		}
+	}
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if ds.createdSessions != 1 {
+		t.Fatalf("expected one shared session, got %d", ds.createdSessions)
+	}
+	if len(ds.payloads) != 2 {
+		t.Fatalf("expected two payloads, got %d", len(ds.payloads))
+	}
+	if got := ds.payloads[1]["parent_message_id"]; got != 701 {
+		t.Fatalf("expected serialized second parent id 701, got %#v", got)
 	}
 }
 

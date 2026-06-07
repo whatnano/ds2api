@@ -61,6 +61,16 @@ func (p ToolChoicePolicy) Allows(name string) bool {
 }
 
 func (r StandardRequest) CompletionPayload(sessionID string) map[string]any {
+	return r.CompletionPayloadWithOptions(CompletionPayloadOptions{SessionID: sessionID})
+}
+
+type CompletionPayloadOptions struct {
+	SessionID       string
+	ParentMessageID any
+	Prompt          string
+}
+
+func (r StandardRequest) CompletionPayloadWithOptions(opts CompletionPayloadOptions) map[string]any {
 	modelID := r.ResolvedModel
 	if modelID == "" {
 		modelID = r.RequestedModel
@@ -76,11 +86,15 @@ func (r StandardRequest) CompletionPayload(sessionID string) map[string]any {
 		}
 		refFileIDs = append(refFileIDs, fileID)
 	}
+	prompt := opts.Prompt
+	if prompt == "" {
+		prompt = r.FinalPrompt
+	}
 	payload := map[string]any{
-		"chat_session_id":   sessionID,
+		"chat_session_id":   opts.SessionID,
 		"model_type":        modelType,
-		"parent_message_id": nil,
-		"prompt":            r.FinalPrompt,
+		"parent_message_id": opts.ParentMessageID,
+		"prompt":            prompt,
 		"ref_file_ids":      refFileIDs,
 		"thinking_enabled":  r.Thinking,
 		"search_enabled":    r.Search,
