@@ -36,6 +36,7 @@ func (c *Client) postJSONWithStatus(ctx context.Context, doer trans.Doer, fallba
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	injectClientSignatureHeaders(req)
 	resp, err := doer.Do(req)
 	if err != nil {
 		config.Logger.Warn("[deepseek] fingerprint request failed, fallback to std transport", "url", url, "error", err)
@@ -46,6 +47,7 @@ func (c *Client) postJSONWithStatus(ctx context.Context, doer trans.Doer, fallba
 		for k, v := range headers {
 			req2.Header.Set(k, v)
 		}
+		injectClientSignatureHeaders(req2)
 		resp, err = fallback.Do(req2)
 		if err != nil {
 			return nil, 0, err
@@ -75,6 +77,7 @@ func (c *Client) getJSONWithStatus(ctx context.Context, doer trans.Doer, url str
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	injectClientSignatureHeaders(req)
 	resp, err := doer.Do(req)
 	if err != nil {
 		config.Logger.Warn("[deepseek] fingerprint GET request failed, fallback to std transport", "url", url, "error", err)
@@ -85,6 +88,7 @@ func (c *Client) getJSONWithStatus(ctx context.Context, doer trans.Doer, url str
 		for k, v := range headers {
 			req2.Header.Set(k, v)
 		}
+		injectClientSignatureHeaders(req2)
 		resp, err = clients.fallback.Do(req2)
 		if err != nil {
 			return nil, 0, err

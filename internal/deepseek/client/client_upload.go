@@ -199,6 +199,7 @@ func escapeMultipartFilename(filename string) string {
 
 func (c *Client) doUpload(ctx context.Context, doer trans.Doer, _ trans.Doer, url string, headers map[string]string, body []byte) (*http.Response, error) {
 	applyRequestJitter()
+	applyRequestJitter()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -206,6 +207,7 @@ func (c *Client) doUpload(ctx context.Context, doer trans.Doer, _ trans.Doer, ur
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	injectClientSignatureHeaders(req)
 	resp, err := doer.Do(req)
 	if err == nil {
 		return resp, nil
