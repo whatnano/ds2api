@@ -3,11 +3,6 @@
 // Implementation moved here to keep the line-gate wrapper tiny.
 
 const {
-  signingEnabled,
-  injectClientSignatureHeaders,
-} = require('../shared/client-signature');
-
-const {
   createToolSieveState,
   processToolSieveChunk,
   flushToolSieve,
@@ -121,15 +116,13 @@ async function handleVercelStream(req, res, rawBody, payload) {
 
     const fetchDeepSeekStream = async (url, bodyPayload, powHeader) => {
       try {
-        const fetchHeaders = {
-          ...BASE_HEADERS,
-          authorization: `Bearer ${deepseekToken}`,
-          'x-ds-pow-response': powHeader,
-        };
-        injectClientSignatureHeaders(fetchHeaders, 'POST', url);
         return await fetch(url, {
           method: 'POST',
-          headers: fetchHeaders,
+          headers: {
+            ...BASE_HEADERS,
+            authorization: `Bearer ${deepseekToken}`,
+            'x-ds-pow-response': powHeader,
+          },
           body: JSON.stringify(bodyPayload),
           signal: upstreamController.signal,
         });
@@ -703,6 +696,3 @@ function sendFailedChunk(res, status, message, code) {
 module.exports = {
   handleVercelStream,
 };
-
-
-

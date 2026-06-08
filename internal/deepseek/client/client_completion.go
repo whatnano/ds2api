@@ -54,7 +54,6 @@ func (c *Client) streamPostWithFallback(ctx context.Context, doer trans.Doer, ur
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	injectClientSignatureHeaders(req)
 	resp, err := doer.Do(req)
 	if err != nil {
 		if allowFallback {
@@ -66,7 +65,6 @@ func (c *Client) streamPostWithFallback(ctx context.Context, doer trans.Doer, ur
 			for k, v := range headers {
 				req2.Header.Set(k, v)
 			}
-			injectClientSignatureHeaders(req2)
 			return clients.fallbackS.Do(req2)
 		}
 		return nil, err

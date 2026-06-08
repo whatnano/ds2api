@@ -221,7 +221,6 @@ func TestProxyConnectivity(ctx context.Context, proxyCfg config.Proxy) map[strin
 		return result
 	}
 	applyProxyConnectivityHeaders(req)
-	injectClientSignatureHeaders(req)
 
 	resp, err := client.Do(req)
 	result["response_time"] = int(time.Since(start).Milliseconds())
