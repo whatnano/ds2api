@@ -28,6 +28,7 @@ func (c *Client) postJSONWithStatus(ctx context.Context, doer trans.Doer, fallba
 		return nil, 0, err
 	}
 	headers = c.jsonHeaders(headers)
+	applyRequestJitter()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
 		return nil, 0, err
@@ -66,6 +67,7 @@ func (c *Client) postJSONWithStatus(ctx context.Context, doer trans.Doer, fallba
 
 func (c *Client) getJSONWithStatus(ctx context.Context, doer trans.Doer, url string, headers map[string]string) (map[string]any, int, error) {
 	clients := c.requestClientsFromContext(ctx)
+	applyRequestJitter()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, 0, err

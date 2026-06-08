@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -19,6 +21,25 @@ type DialContextFunc func(ctx context.Context, network, addr string) (net.Conn, 
 
 type Client struct {
 	http *http.Client
+}
+
+// ResolvedTLSFingerprint returns the uTLS ClientHelloID for the current
+// DS2API_TLS_FINGERPRINT setting (default: safari).
+func ResolvedTLSFingerprint() utls.ClientHelloID {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("DS2API_TLS_FINGERPRINT"))) {
+	case "chrome":
+		return utls.HelloChrome_Auto
+	case "firefox":
+		return utls.HelloFirefox_Auto
+	case "ios":
+		return utls.HelloIOS_Auto
+	case "randomized":
+		return utls.HelloRandomized
+	case "android":
+		return utls.HelloAndroid_11_OkHttp
+	default:
+		return utls.HelloSafari_Auto
+	}
 }
 
 func New(timeout time.Duration) *Client {
@@ -69,6 +90,7 @@ func NewFallbackClient(timeout time.Duration, dialContext DialContextFunc) *http
 }
 
 func safariTLSDialer(dialContext DialContextFunc) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	fingerprint := ResolvedTLSFingerprint()
 	if dialContext == nil {
 		dialContext = (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 	}
@@ -79,7 +101,7 @@ func safariTLSDialer(dialContext DialContextFunc) func(ctx context.Context, netw
 		}
 		host, _, _ := net.SplitHostPort(addr)
 		uCfg := &utls.Config{ServerName: host}
-		uConn := utls.UClient(plainConn, uCfg, utls.HelloSafari_Auto)
+		uConn := utls.UClient(plainConn, uCfg, fingerprint)
 		if err := forceHTTP11ALPN(uConn); err != nil {
 			_ = plainConn.Close()
 			return nil, err

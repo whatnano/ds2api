@@ -46,6 +46,7 @@ func (c *Client) streamPostWithFallback(ctx context.Context, doer trans.Doer, ur
 	}
 	headers = c.jsonHeaders(headers)
 	clients := c.requestClientsFromContext(ctx)
+	applyRequestJitter()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
 		return nil, err
